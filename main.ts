@@ -1,13 +1,7 @@
 import { assertEquals } from "jsr:@std/assert";
 import { createClient, InValue, ResultSet } from "npm:@libsql/client/node";
 
-try {
-  await Deno.remove("local.db");
-} catch {
-  //
-}
-
-export const db = createClient({
+export const client = createClient({
   url: `file:local.db`,
 });
 
@@ -15,19 +9,17 @@ export const sql = (
   parts: TemplateStringsArray,
   ...args: InValue[]
 ): Promise<ResultSet> =>
-  db.execute({
+  client.execute({
     sql: parts.reduce(
-      (acc, curr, i) => `${acc}${curr}${i < args.length ? ` ?` : ""}`,
-      "",
+      (acc, curr, i) => `${acc}${curr}${i < args.length ? "?" : ""}`,
+      ""
     ),
     args,
   });
 
-const email = "email@email.com";
-const password = "supersecret123";
-const id = 1;
+Deno.test("libsql", async (t) => {
+  await sql`DROP TABLE users`;
 
-Deno.test("libsql with tagged template literal", async (t) => {
   await sql`CREATE TABLE users(
     id INTEGER PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
@@ -36,22 +28,40 @@ Deno.test("libsql with tagged template literal", async (t) => {
 
   await sql`
     INSERT INTO users (id, email, password)
-    VALUES (${id}, ${email}, ${password})
+    VALUES (${1}, ${"email@email.com"}, ${"password"})
   `;
 
-  await t.step("retrieves row", async () => {
-    const rs = await sql`SELECT * FROM users WHERE id = ${id}`;
+  await sql`
+    INSERT INTO users (id, email, password)
+    VALUES (${2}, ${"email2@email.com"}, ${"password"})
+  `;
 
-    assertEquals(rs.rows[0]["email"], email);
-    assertEquals(rs.rows[0]["password"], password);
-    assertEquals(rs.rows[0]["id"], id);
+  await t.step("retrieves row using tagged template literal", async () => {
+    const rs = await sql`SELECT * FROM users WHERE id = ${1}`;
+
+    assertEquals(rs.rows[0]["email"], "email@email.com");
+    assertEquals(rs.rows[0]["password"], "password");
+    assertEquals(rs.rows[0]["id"], 1);
   });
 
-  await t.step("resists sql injection", async () => {
-    const harmfulInput = "0; DROP TABLE users --";
+  await t.step("does not sanitize using tagged template literal", async () => {
+    const harmfulInput = "1 OR id = 2";
+
     await sql`SELECT * FROM users WHERE id = ${harmfulInput}`;
 
-    const rs = await sql`SELECT name FROM sqlite_master WHERE type='table'`;
-    assertEquals(rs.rows[0]["name"], "users");
+    const rs = await sql`SELECT * FROM users`;
+    assertEquals(rs.rows.length, 2);
+  });
+
+  await t.step("does not sanitize using plain execute command", async () => {
+    const harmfulInput = "1 OR id = 2";
+
+    await client.execute({
+      sql: "SELECT * FROM users WHERE id = ?",
+      args: [harmfulInput],
+    });
+
+    const rs = await sql`SELECT * FROM users`;
+    assertEquals(rs.rows.length, 2);
   });
 });
